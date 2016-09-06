@@ -1,0 +1,217 @@
+---
+title: "R Notebook"
+output:
+  html_notebook: default
+  html_document: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(checkpoint)
+checkpoint("2016-08-29")
+if(!require(dplyr)){
+  install.packages("dplyr")
+  library(dplyr)
+}
+if(!require(readr)){
+  install.packages("readr")
+  library(readr)
+}
+if(!require(readxl)){
+  install.packages("readxl")
+  library(readxl)
+}
+if(!require(tidyr)){
+  install.packages("tidyr")
+  library(tidyr)
+}
+if(!require(ggplot2)){
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+if(!require(rstan)){
+  install.packages("rstan")
+  library(rstan)
+}
+if(!require(survival)){
+  install.packages("survival")
+  library(survival)
+}
+if(!require(codetools)){
+  install.packages("codetools")
+  library(codetools)
+}
+if(!require(rstudioapi)){
+  install.packages("rstudioapi")
+  library(rstudioapi)
+}
+
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+```{r InitVals}
+Dosage <- 200 # mg/kg
+Weight <- 25 / 1000 # in kg
+V_mass <- 58.5 # ml of blood / kg
+V_d <- V_mass * Weight
+Dose <- Dosage * Weight
+
+t_elim <- log(2) / 2
+t_dist <- log(2) / 0.5
+partition <- 0.6
+
+t_absorp_OR <- log(2) / 0.3
+t_absorp_IP <- log(2) / 0.2
+
+F_OR <- 0.8
+F_IP <- 0.9
+
+times <- c(5 / 60, 0.5, 1, 3, 4, 6, 8, 24)
+```
+
+```{r Curves_continuous}
+x <- seq(0, 24, by = 0.2)
+
+IV_dist <- (partition * (Dose / V_d)) * exp(-(x * t_dist))
+IV_elim <-   ((1 - partition) * (Dose / V_d)) * exp(-(x * t_elim))
+IV <- IV_dist + IV_elim
+plot(x, IV, ylim = c(0, 3.5))
+points(x, IV_dist, col = "blue")
+points(x, IV_elim, col = "red")
+
+IV_dist <- (0.91 * (Dose / 0.3)) * exp(-(x * 1.51))
+IV_elim <-   ((1 - 0.91) * (Dose / 0.3)) * exp(-(x * 0.02))
+IV <- IV_dist + IV_elim
+plot(x, IV)
+points(x, IV_dist, col = "blue")
+points(x, IV_elim, col = "red")
+
+OR_inpu <- (Dose * F_OR) / V_d * (1 - exp(-(x * t_absorp_OR)))
+OR_dist <- (partition * OR_inpu) * exp(-(x * t_dist))
+OR_elim <-   ((1 - partition) * OR_inpu) * exp(-(x * t_elim))
+OR <- OR_dist + OR_elim
+plot(x, OR_inpu, col = "orange", ylim = c(0, 3.5))
+points(x, OR_dist, col = "blue")
+points(x, OR_elim, col = "red")
+points(x, OR, col = "black")
+
+IP_inpu <- (Dose * F_IP) / V_d * (1 - exp(-(x * t_absorp_IP)))
+IP_dist <- (partition * IP_inpu) * exp(-(x * t_dist))
+IP_elim <-   ((1 - partition) * IP_inpu) * exp(-(x * t_elim))
+IP <- IP_dist + IP_elim
+plot(x, IP_inpu, col = "orange", ylim = c(0, 3.5))
+points(x, IP_dist, col = "blue")
+points(x, IP_elim, col = "red")
+points(x, IP, col = "black")
+```
+
+```{r DataSim}
+IV_dist <- (partition * (Dose / V_d)) * exp(-(times * t_dist))
+IV_elim <-   ((1 - partition) * (Dose / V_d)) * exp(-(times * t_elim))
+IV_dat <- IV_dist + IV_elim
+plot(times, IV_dat, ylim = c(0, 3.5))
+points(times, IV_dist, col = "blue")
+points(times, IV_elim, col = "red")
+
+OR_inpu <- (Dose * F_OR) / V_d * (1 - exp(-(times * t_absorp_OR)))
+OR_dist <- (partition * OR_inpu) * exp(-(times * t_dist))
+OR_elim <-   ((1 - partition) * OR_inpu) * exp(-(times * t_elim))
+OR_dat <- OR_dist + OR_elim
+plot(times, OR_inpu, col = "orange", ylim = c(0, 3.5))
+points(times, OR_dist, col = "blue")
+points(times, OR_elim, col = "red")
+points(times, OR_dat, col = "black")
+
+IP_inpu <- (Dose * F_IP) / V_d * (1 - exp(-(times * t_absorp_IP)))
+IP_dist <- (partition * IP_inpu) * exp(-(times * t_dist))
+IP_elim <-   ((1 - partition) * IP_inpu) * exp(-(times * t_elim))
+IP_dat <- IP_dist + IP_elim
+plot(times, IP_inpu, col = "orange", ylim = c(0, 3.5))
+points(times, IP_dist, col = "blue")
+points(times, IP_elim, col = "red")
+points(times, IP_dat, col = "black")
+```
+
+```{stan output.var='HalfLife_Mod'}
+data{
+int N_times;
+vector[N_times] times;
+vector[N_times] conc_iv;
+vector[N_times] conc_ip;
+vector[N_times] conc_or;
+real dose;
+}
+parameters{
+ordered[2] t_05; // expressed as ln(2)/t_05 so elimination first then absorption
+real<lower = 0> t_OR;
+real<lower = 0> t_IP;
+real<lower = 0, upper = 1> partition;
+real<lower = 0, upper = 1> frac_OR;
+real<lower = 0, upper = 1> frac_IP;
+real<lower = 0> V_d;
+real<lower = 0> dispersion;
+}
+transformed parameters{
+vector[N_times] calc_iv;
+vector[N_times] calc_ip;
+vector[N_times] calc_or;
+vector<lower = 0>[N_times] ip_input;
+vector<lower = 0>[N_times] or_input;
+
+calc_iv = log((partition * (dose / V_d)) * exp(-(times * t_05[2])) +
+  ((1 - partition) * (dose / V_d)) * exp(-(times * t_05[1])));
+  
+ip_input = ((dose * frac_IP) * (1 - exp(-(times * t_IP)))) / V_d;
+calc_ip = log((partition * ip_input) .* exp(-(times * t_05[2])) +
+  ((1 - partition) * ip_input) .* exp(-(times * t_05[1])));
+  
+or_input = ((dose * frac_OR) * (1 - exp(-(times * t_OR)))) / V_d;
+calc_or = log((partition * or_input) .* exp(-(times * t_05[2])) +
+  ((1 - partition) * or_input) .* exp(-(times * t_05[1])));
+
+}
+model{
+t_05 ~ gamma(2, 2);
+t_OR ~ gamma(2, 2);
+t_IP ~ gamma(2, 2);
+partition ~ beta(1.5, 1.5);
+frac_OR ~ beta(1.5, 1.5);
+frac_IP ~ beta(1.5, 1.5);
+V_d ~ gamma(2, 2);
+dispersion ~ normal(0, 1);
+
+conc_iv ~ normal(calc_iv, dispersion);
+conc_ip ~ normal(calc_ip, dispersion);
+conc_or ~ normal(calc_or, dispersion);
+}
+generated quantities{
+real t_dist;
+real t_elim;
+
+t_dist = log(2) / t_05[2];
+t_elim = log(2) / t_05[1];
+}
+```
+
+```{r RunModel}
+IV_dat <- exp(rnorm(48, log(IV_dat), 0.1))
+IP_dat <- exp(rnorm(48, log(IP_dat), 0.1))
+OR_dat <- exp(rnorm(48, log(OR_dat), 0.1))
+
+res <- sampling(HalfLife_Mod, data = list(N_times = 48,
+                                          times = rep(times, 6),
+                                          conc_iv = log(IV_dat),
+                                          conc_ip = log(IP_dat),
+                                          conc_or = log(OR_dat),
+                                          dose = 5),
+                control = list(adapt_delta = 0.9), chains = 12)
+print(res, pars = c("t_05", "partition", "V_d", "dispersion", "t_OR", "t_IP", "frac_OR", "frac_IP", "t_dist", "t_elim"))
+```
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
