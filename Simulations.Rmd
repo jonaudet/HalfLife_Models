@@ -212,6 +212,244 @@ res <- sampling(HalfLife_Mod, data = list(N_times = 48,
                 control = list(adapt_delta = 0.9), chains = 12)
 print(res, pars = c("t_05", "partition", "V_d", "dispersion", "t_OR", "t_IP", "frac_OR", "frac_IP", "t_dist", "t_elim"))
 ```
+
+```{r RunModel_1Animal}
+IV_dat <- exp(rnorm(8, log(IV_dat), 0.1))
+IP_dat <- exp(rnorm(8, log(IP_dat), 0.1))
+OR_dat <- exp(rnorm(8, log(OR_dat), 0.1))
+
+res <- sampling(HalfLife_Mod, data = list(N_times = 8,
+                                          times = times,
+                                          conc_iv = log(IV_dat),
+                                          conc_ip = log(IP_dat),
+                                          conc_or = log(OR_dat),
+                                          dose = 5),
+                control = list(adapt_delta = 0.9), chains = 12)
+print(res, pars = c("t_05", "partition", "V_d", "dispersion", "t_OR", "t_IP", "frac_OR", "frac_IP", "t_dist", "t_elim"))
+```
+
+```{r DataSim_Hierarch}
+Dosage <- 200 # mg/kg
+Weights <- rnorm(6, 25, 1) / 1000 # in kg
+V_mass <- 58.5 # ml of blood / kg
+V_ds <- V_mass * Weights
+Dose <- 5
+
+t_elims <- log(2) / rnorm(6, 2, 0.3)
+t_dists <- log(2) / abs(rnorm(6, 0.5, 0.15))
+partitions <- rnorm(6, 0.6, 0.1)
+
+t_absorp_ORs <- log(2) / abs(rnorm(6, 0.3, 0.1))
+t_absorp_IPs <- log(2) / abs(rnorm(6, 0.2, 0.1))
+
+F_ORs <- replicate(6, min(c(0.99, rnorm(1, 0.8, 0.1))))
+F_IPs <- replicate(6, min(c(0.99, rnorm(1, 0.9, 0.1))))
+
+IV_dists <- matrix(rep(0, 48), ncol = 6)
+IV_elims <- matrix(rep(0, 48), ncol = 6)
+IV_dats <- matrix(rep(0, 48), ncol = 6)
+
+IP_inpus <- matrix(rep(0, 48), ncol = 6)
+IP_dists <- matrix(rep(0, 48), ncol = 6)
+IP_elims <- matrix(rep(0, 48), ncol = 6)
+IP_dats <- matrix(rep(0, 48), ncol = 6)
+
+OR_inpus <- matrix(rep(0, 48), ncol = 6)
+OR_dists <- matrix(rep(0, 48), ncol = 6)
+OR_elims <- matrix(rep(0, 48), ncol = 6)
+OR_dats <- matrix(rep(0, 48), ncol = 6)
+
+for(i in 1:6){
+  IV_dists[, i] <- (partitions[i] * (Dose / V_ds[i])) * exp(-(times * t_dists[i]))
+  IV_elims[, i] <-   ((1 - partitions[i]) * (Dose / V_ds[i])) * exp(-(times * t_elims[i]))
+  IV_dats[, i] <- exp(rnorm(8, log(IV_dists[, i] + IV_elims[, i]), 0.1))
+  
+  OR_inpus[, i] <- (Dose * F_ORs[i]) / V_ds[i] * (1 - exp(-(times * t_absorp_ORs[i])))
+  OR_dists[, i] <- (partitions[i] * OR_inpus[, i]) * exp(-(times * t_dists[i]))
+  OR_elims[, i] <-   ((1 - partitions[i]) * OR_inpus[, i]) * exp(-(times * t_elims[i]))
+  OR_dats[, i] <- exp(rnorm(8, log(OR_dists[, i] + OR_elims[, i]), 0.1))
+  
+  IP_inpus[, i] <- (Dose * F_IPs[i]) / V_ds[i] * (1 - exp(-(times * t_absorp_IPs[i])))
+  IP_dists[, i] <- (partitions[i] * IP_inpus[, i]) * exp(-(times * t_dists[i]))
+  IP_elims[, i] <-   ((1 - partitions[i]) * IP_inpus[, i]) * exp(-(times * t_elims[i]))
+  IP_dats[, i] <- exp(rnorm(8, log(IP_dists[, i] + IP_elims[, i]), 0.1))
+}
+
+indiv_plot <- as_data_frame(IV_dats) %>%
+  bind_rows(as_data_frame(IP_dats), as_data_frame(OR_dats)) %>%
+  mutate(Time = rep(times, 3),
+         Route = rep(c("IV", "IP", "Oral"), each = 8)) %>%
+  gather("Animal", "Concentration", 1:6)
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~Animal) +
+  theme_minimal()
+```
+
+```{stan output.var='HalfLife_Mod_ML'}
+data{
+int N_times;
+int N_reps;
+vector[N_times] times;
+matrix[N_times, N_reps] conc_iv;
+matrix[N_times, N_reps] conc_ip;
+matrix[N_times, N_reps] conc_or;
+real dose;
+}
+transformed data{
+vector[N_times * N_reps] conc_iv_V;
+vector[N_times * N_reps] conc_ip_V;
+vector[N_times * N_reps] conc_or_V;
+
+conc_iv_V = to_vector(conc_iv);
+conc_ip_V = to_vector(conc_ip);
+conc_or_V = to_vector(conc_or);
+}
+parameters{
+//means
+ordered[2] log_t_05_mus; // expressed as ln(2)/t_05 so elimination first then distribution
+real log_t_OR_mu;
+real log_t_IP_mu;
+real log_V_d_mu;
+//SDs
+vector<lower = 0>[2] t_05_sigmas;
+real<lower = 0> t_OR_sigma;
+real<lower = 0> t_IP_sigma;
+real<lower = 0> V_d_sigma;
+//Raw values
+vector[N_reps] t_elim_raw;
+vector[N_reps] t_dist_raw;
+vector[N_reps] t_OR_raw;
+vector[N_reps] t_IP_raw;
+vector[N_reps] V_d_raw;
+
+//Fractional values are beta-distributed
+vector<lower = 0, upper = 1>[N_reps] partition;
+vector<lower = 0, upper = 1>[N_reps] frac_OR;
+vector<lower = 0, upper = 1>[N_reps] frac_IP;
+real<lower = 0> partition_suc;
+real<lower = 0> frac_OR_suc;
+real<lower = 0> frac_IP_suc;
+real<lower = 0> partition_fail;
+real<lower = 0> frac_OR_fail;
+real<lower = 0> frac_IP_fail;
+
+real<lower = 0> dispersion;
+}
+transformed parameters{
+vector<lower = 0>[N_reps] t_elim;
+vector<lower = 0>[N_reps] t_dist;
+vector<lower = 0>[N_reps] t_OR;
+vector<lower = 0>[N_reps] t_IP;
+vector<lower = 0>[N_reps] V_d;
+
+matrix[N_times, N_reps] calc_iv;
+matrix[N_times, N_reps] calc_ip;
+matrix[N_times, N_reps] calc_or;
+
+t_elim = exp(log_t_05_mus[1] + t_elim_raw * t_05_sigmas[1]);
+t_dist = exp(log_t_05_mus[2] + t_dist_raw * t_05_sigmas[2]);
+t_OR = exp(log_t_OR_mu + t_OR_raw * t_OR_sigma);
+t_IP = exp(log_t_IP_mu + t_IP_raw * t_IP_sigma);
+V_d = exp(log_V_d_mu + V_d_raw * V_d_sigma);
+
+for(i in 1:N_reps){
+  vector[N_times] ip_input;
+  vector[N_times] or_input;
+  
+  calc_iv[, i] = log((partition[i] * (dose / V_d[i])) * exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * (dose / V_d[i])) * exp(-(times * t_elim[i])));
+
+  ip_input = ((dose * frac_IP[i]) * (1 - exp(-(times * t_IP[i])))) / V_d[i];
+  calc_ip[, i] = log((partition[i] * ip_input) .* exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * ip_input) .* exp(-(times * t_elim[i])));
+
+  or_input = ((dose * frac_OR[i]) * (1 - exp(-(times * t_OR[i])))) / V_d[i];
+  calc_or[, i] = log((partition[i] * or_input) .* exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * or_input) .* exp(-(times * t_elim[i])));
+}
+
+}
+model{
+vector[N_times * N_reps] calc_iv_V;
+vector[N_times * N_reps] calc_ip_V;
+vector[N_times * N_reps] calc_or_V;
+
+log_t_05_mus ~ normal(0, 2);
+log_t_OR_mu ~ normal(0, 2);
+log_t_IP_mu ~ normal(0, 2);
+log_V_d_mu ~ normal(0, 2);
+
+//SDs
+t_05_sigmas ~ cauchy(0, 5);
+t_OR_sigma ~ normal(0, 5);
+t_IP_sigma ~ normal(0, 5);
+V_d_sigma ~ normal(0, 5);
+//Raw values
+t_elim_raw ~ normal(0, 1);
+t_dist_raw ~ normal(0, 1);
+t_OR_raw ~ normal(0, 1);
+t_IP_raw ~ normal(0, 1);
+V_d_raw ~ normal(0, 1);
+
+//Fractional values are beta-distributed
+partition ~ beta(partition_suc, partition_fail);
+frac_OR ~ beta(frac_OR_suc, frac_OR_fail);
+frac_IP ~ beta(frac_IP_suc, frac_IP_fail);
+partition_suc ~ student_t(3, 0, 3);
+frac_OR_suc ~ student_t(3, 0, 3);
+frac_IP_suc ~ student_t(3, 0, 3);
+partition_fail ~ student_t(3, 0, 3);
+frac_OR_fail ~ student_t(3, 0, 3);
+frac_IP_fail ~ student_t(3, 0, 3);
+
+//partition ~ beta(2, 2);
+//frac_OR ~ beta(2, 2);
+//frac_IP ~ beta(2, 2);
+
+dispersion ~ normal(0, 1);
+
+
+
+
+calc_iv_V = to_vector(calc_iv);
+calc_ip_V = to_vector(calc_ip);
+calc_or_V = to_vector(calc_or);
+
+conc_iv_V ~ normal(calc_iv_V, dispersion);
+conc_ip_V ~ normal(calc_ip_V, dispersion);
+conc_or_V ~ normal(calc_or_V, dispersion);
+}
+generated quantities{
+vector[N_reps] t_dist_lin;
+vector[N_reps] t_elim_lin;
+
+for(i in 1:N_reps){
+  t_dist_lin[i] = log(2) / t_dist[i];
+  t_elim_lin[i] = log(2) / t_elim[i];
+}
+}
+```
+
+
+```{r RunMLModel}
+res <- sampling(HalfLife_Mod_ML, data = list(N_times = 8,
+                                             N_reps = 6,
+                                          times = times,
+                                          conc_iv = log(IV_dats),
+                                          conc_ip = log(IP_dats),
+                                          conc_or = log(OR_dats),
+                                          dose = 5),
+                control = list(adapt_delta = 0.999), chains = 4, iter = 20000,
+                warmup = 15000, refresh = 200)
+print(res, pars = c("log_t_05_mus", "t_05_sigmas", "partition_suc", "partition_fail",
+                    "log_V_d_mu", "V_d_sigma", "dispersion", "log_t_OR_mu", "t_OR_sigma",
+                    "log_t_IP_mu", "t_IP_sigma",
+                    "frac_OR_suc", "frac_OR_fail", "frac_IP_suc", "frac_IP_fail",
+                    "t_dist", "t_elim"))
+```
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
 When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
