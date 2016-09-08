@@ -405,14 +405,8 @@ partition_fail ~ student_t(3, 0, 3);
 frac_OR_fail ~ student_t(3, 0, 3);
 frac_IP_fail ~ student_t(3, 0, 3);
 
-//partition ~ beta(2, 2);
-//frac_OR ~ beta(2, 2);
-//frac_IP ~ beta(2, 2);
 
 dispersion ~ normal(0, 1);
-
-
-
 
 calc_iv_V = to_vector(calc_iv);
 calc_ip_V = to_vector(calc_ip);
@@ -442,8 +436,8 @@ res <- sampling(HalfLife_Mod_ML, data = list(N_times = 8,
                                           conc_ip = log(IP_dats),
                                           conc_or = log(OR_dats),
                                           dose = 5),
-                control = list(adapt_delta = 0.999), chains = 4, iter = 20000,
-                warmup = 15000, refresh = 200)
+                control = list(adapt_delta = 0.999), chains = 12, iter = 10000,
+                warmup = 7500, refresh = 250)
 print(res, pars = c("log_t_05_mus", "t_05_sigmas", "partition_suc", "partition_fail",
                     "log_V_d_mu", "V_d_sigma", "dispersion", "log_t_OR_mu", "t_OR_sigma",
                     "log_t_IP_mu", "t_IP_sigma",
