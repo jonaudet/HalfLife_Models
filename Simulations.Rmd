@@ -295,69 +295,74 @@ int N_reps;
 vector[N_times] times;
 matrix[N_times, N_reps] conc_iv;
 matrix[N_times, N_reps] conc_ip;
-//matrix[N_times, N_reps] conc_or;
+matrix[N_times, N_reps] conc_or;
 real dose;
 }
 transformed data{
 vector[N_times * N_reps] conc_iv_V;
 vector[N_times * N_reps] conc_ip_V;
-//vector[N_times * N_reps] conc_or_V;
+vector[N_times * N_reps] conc_or_V;
 
 conc_iv_V = to_vector(conc_iv);
 conc_ip_V = to_vector(conc_ip);
-//conc_or_V = to_vector(conc_or);
+conc_or_V = to_vector(conc_or);
 }
 parameters{
 //means
-ordered[2] log_t_05_mus; // expressed as ln(2)/t_05 so elimination first then distribution
-//real log_t_OR_mu;
+real log_t_05_mu; // expressed as ln(2)/t_05 so elimination first then distribution
+real log_t_OR_mu;
 real log_t_IP_mu;
 real log_V_d_mu;
 //SDs
-vector<lower = 0>[2] t_05_sigmas;
-//real<lower = 0> t_OR_sigma;
+real<lower = 0> t_05_sigma;
+real<lower = 0> t_OR_sigma;
 real<lower = 0> t_IP_sigma;
 real<lower = 0> V_d_sigma;
 //Raw values
 vector[N_reps] t_elim_raw;
-vector[N_reps] t_dist_raw;
-//vector[N_reps] t_OR_raw;
+vector[N_reps] t_OR_raw;
 vector[N_reps] t_IP_raw;
 vector[N_reps] V_d_raw;
 
 //Fractional values are beta-distributed
 vector<lower = 0, upper = 1>[N_reps] partition;
-//vector<lower = 0, upper = 1>[N_reps] frac_OR;
+vector<lower = 0, upper = 1>[N_reps] frac_OR;
 vector<lower = 0, upper = 1>[N_reps] frac_IP;
+vector<lower = 0, upper = 1>[N_reps] dist_prop; // distribution:elimination half-life proportion
 real<lower = 0> partition_suc;
-//real<lower = 0> frac_OR_suc;
+real<lower = 0> frac_OR_suc;
 real<lower = 0> frac_IP_suc;
+real<lower = 0> dist_prop_suc;
 real<lower = 0> partition_fail;
-//real<lower = 0> frac_OR_fail;
+real<lower = 0> frac_OR_fail;
 real<lower = 0> frac_IP_fail;
+real<lower = 0> dist_prop_fail;
 
 real<lower = 0> dispersion;
 }
 transformed parameters{
 vector<lower = 0>[N_reps] t_elim;
 vector<lower = 0>[N_reps] t_dist;
-//vector<lower = 0>[N_reps] t_OR;
+vector<lower = 0>[N_reps] t_OR;
 vector<lower = 0>[N_reps] t_IP;
 vector<lower = 0>[N_reps] V_d;
 
 matrix[N_times, N_reps] calc_iv;
 matrix[N_times, N_reps] calc_ip;
-//matrix[N_times, N_reps] calc_or;
+matrix[N_times, N_reps] calc_or;
 
-t_elim = exp(log_t_05_mus[1] + t_elim_raw * t_05_sigmas[1]);
-t_dist = exp(log_t_05_mus[2] + t_dist_raw * t_05_sigmas[2]);
-//t_OR = exp(log_t_OR_mu + t_OR_raw * t_OR_sigma);
+t_elim = exp(log_t_05_mu + t_elim_raw * t_05_sigma);
+t_dist = dist_prop .* t_elim;
+t_OR = exp(log_t_OR_mu + t_OR_raw * t_OR_sigma);
 t_IP = exp(log_t_IP_mu + t_IP_raw * t_IP_sigma);
 V_d = exp(log_V_d_mu + V_d_raw * V_d_sigma);
 
+t_elim = log(2) ./ t_elim;
+t_dist = log(2) ./ t_dist;
+
 for(i in 1:N_reps){
   vector[N_times] ip_input;
-  //vector[N_times] or_input;
+  vector[N_times] or_input;
   
   calc_iv[, i] = log((partition[i] * (dose / V_d[i])) * exp(-(times * t_dist[i])) +
     ((1 - partition[i]) * (dose / V_d[i])) * exp(-(times * t_elim[i])));
@@ -365,57 +370,58 @@ for(i in 1:N_reps){
   ip_input = ((dose * frac_IP[i]) * (1 - exp(-(times * t_IP[i])))) / V_d[i];
   calc_ip[, i] = log((partition[i] * ip_input) .* exp(-(times * t_dist[i])) +
     ((1 - partition[i]) * ip_input) .* exp(-(times * t_elim[i])));
-//
-//  or_input = ((dose * frac_OR[i]) * (1 - exp(-(times * t_OR[i])))) / V_d[i];
-//  calc_or[, i] = log((partition[i] * or_input) .* exp(-(times * t_dist[i])) +
-//    ((1 - partition[i]) * or_input) .* exp(-(times * t_elim[i])));
+
+  or_input = ((dose * frac_OR[i]) * (1 - exp(-(times * t_OR[i])))) / V_d[i];
+  calc_or[, i] = log((partition[i] * or_input) .* exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * or_input) .* exp(-(times * t_elim[i])));
 }
 
 }
 model{
 vector[N_times * N_reps] calc_iv_V;
 vector[N_times * N_reps] calc_ip_V;
-//vector[N_times * N_reps] calc_or_V;
+vector[N_times * N_reps] calc_or_V;
 
-log_t_05_mus[1] ~ normal(-1, 2);
-log_t_05_mus[2] ~ normal(0, 2);
-//log_t_OR_mu ~ normal(0, 2);
+log_t_05_mu ~ normal(0, 2);
+log_t_OR_mu ~ normal(0, 2);
 log_t_IP_mu ~ normal(0, 2);
 log_V_d_mu ~ normal(0, 2);
 
 //SDs
-t_05_sigmas ~ normal(0, 1);
-//t_OR_sigma ~ normal(0, 5);
+t_05_sigma ~ normal(0, 1);
+t_OR_sigma ~ normal(0, 5);
 t_IP_sigma ~ normal(0, 5);
 V_d_sigma ~ normal(0, 5);
 //Raw values
 t_elim_raw ~ normal(0, 1);
-t_dist_raw ~ normal(0, 1);
-//t_OR_raw ~ normal(0, 1);
+t_OR_raw ~ normal(0, 1);
 t_IP_raw ~ normal(0, 1);
 V_d_raw ~ normal(0, 1);
 
 //Fractional values are beta-distributed
 partition ~ beta(partition_suc, partition_fail);
-//frac_OR ~ beta(frac_OR_suc, frac_OR_fail);
+frac_OR ~ beta(frac_OR_suc, frac_OR_fail);
 frac_IP ~ beta(frac_IP_suc, frac_IP_fail);
+dist_prop ~ beta(dist_prop_suc, dist_prop_fail);
 partition_suc ~ student_t(3, 0, 3);
-//frac_OR_suc ~ student_t(3, 0, 3);
+frac_OR_suc ~ student_t(3, 0, 3);
 frac_IP_suc ~ student_t(3, 0, 3);
+dist_prop_suc ~ student_t(3, 0, 3);
 partition_fail ~ student_t(3, 0, 3);
-//frac_OR_fail ~ student_t(3, 0, 3);
+frac_OR_fail ~ student_t(3, 0, 3);
 frac_IP_fail ~ student_t(3, 0, 3);
+dist_prop_fail ~ student_t(3, 0, 3);
 
 
 dispersion ~ normal(0, 1);
 
 calc_iv_V = to_vector(calc_iv);
 calc_ip_V = to_vector(calc_ip);
-//calc_or_V = to_vector(calc_or);
+calc_or_V = to_vector(calc_or);
 
 conc_iv_V ~ normal(calc_iv_V, dispersion);
 conc_ip_V ~ normal(calc_ip_V, dispersion);
-//conc_or_V ~ normal(calc_or_V, dispersion);
+conc_or_V ~ normal(calc_or_V, dispersion);
 }
 generated quantities{
 vector[N_reps] t_dist_lin;
@@ -437,12 +443,13 @@ res <- sampling(HalfLife_Mod_ML, data = list(N_times = 8,
                                           conc_ip = log(IP_dats),
                                           conc_or = log(OR_dats),
                                           dose = 5),
-                control = list(adapt_delta = 0.999), chains = 12, iter = 5000,
+                control = list(adapt_delta = 0.9999), chains = 12, iter = 5000,
                 warmup = 2500, refresh = 250)
-print(res, pars = c("log_t_05_mus", "t_05_sigmas", "partition_suc", "partition_fail",
-                    "log_V_d_mu", "V_d_sigma", "dispersion",# "log_t_OR_mu", "t_OR_sigma",
+print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "partition_fail",
+                    "log_V_d_mu", "V_d_sigma", "dispersion", "log_t_OR_mu", "t_OR_sigma",
                     "log_t_IP_mu", "t_IP_sigma",
-                    #"frac_OR_suc", "frac_OR_fail",
+                    "frac_OR_suc", "frac_OR_fail",
+                    "dist_prop_suc", "dist_prop_fail",
                     "frac_IP_suc", "frac_IP_fail",
                     "t_dist", "t_elim"))
 ```
@@ -472,12 +479,13 @@ ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3) + facet_wrap(~Ch
 df$position <- rep(c(1:2499), 12)
 ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
 t_05 <- rstan::extract(res, "t_elim")$t_elim
-df$x <- t_05[1:29988, 1]
-df$y <- t_05[1:29988, 2]
+t_diss <- rstan::extract(res, "t_dist")$t_dist
+df$x <- t_05[1:29988, 6]
+df$y <- t_diss[1:29988, 6]
 ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3)
 ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
 df$position <- rep(c(1:2499), 12)
-ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
+ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain, scales = "free")
 ```
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
