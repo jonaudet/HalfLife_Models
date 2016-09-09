@@ -278,7 +278,7 @@ for(i in 1:6){
 indiv_plot <- as_data_frame(IV_dats) %>%
   bind_rows(as_data_frame(IP_dats), as_data_frame(OR_dats)) %>%
   mutate(Time = rep(times, 3),
-         Route = rep(c("IV", "IP", "Oral"), each = 8)) %>%
+         Route = rep(c("IV", "IP", "OR"), each = 8)) %>%
   gather("Animal", "Concentration", 1:6)
 
 ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
@@ -443,8 +443,9 @@ res <- sampling(HalfLife_Mod_ML, data = list(N_times = 8,
                                           conc_ip = log(IP_dats),
                                           conc_or = log(OR_dats),
                                           dose = 5),
-                control = list(adapt_delta = 0.9999), chains = 12, iter = 5000,
+                control = list(adapt_delta = 0.9999), chains = 16, iter = 5000,
                 warmup = 2500, refresh = 250)
+saveRDS(res, "HalfLife_Mod_ML.RDS")
 print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "partition_fail",
                     "log_V_d_mu", "V_d_sigma", "dispersion", "log_t_OR_mu", "t_OR_sigma",
                     "log_t_IP_mu", "t_IP_sigma",
@@ -454,38 +455,138 @@ print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "
                     "t_dist", "t_elim"))
 ```
 
-```{r}
-stepsizes <- rep(0, 12)
-for(i in 1:12) stepsizes[i] <- mean(attr(res@sim$samples[[i]], "sampler_params")$stepsize__)
-stepsizes
-accept <- rep(0, 12)
-for(i in 1:12) accept[i] <- mean(attr(res@sim$samples[[i]], "sampler_params")$accept_stat__)
-accept
-df <- stan_scat(res, pars = c("partition_suc", "partition_fail"))$data
-df$Chain <- factor(rep(c(1:12), each = 2499))
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3)
-t_05 <- rstan::extract(res, "log_t_05_mus")$log_t_05_mus
-df$x <- t_05[1:29988, 1]
-df$y <- t_05[1:29988, 2]
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3)
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
-df$position <- rep(c(1:2499), 12)
-ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
-t_05 <- rstan::extract(res, "t_05_sigmas")$t_05_sigmas
-df$x <- t_05[1:29988, 1]
-df$y <- t_05[1:29988, 2]
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3)
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
-df$position <- rep(c(1:2499), 12)
-ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
-t_05 <- rstan::extract(res, "t_elim")$t_elim
-t_diss <- rstan::extract(res, "t_dist")$t_dist
-df$x <- t_05[1:29988, 6]
-df$y <- t_diss[1:29988, 6]
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3)
-ggplot(df, aes(x, y, colour = Chain)) + geom_point(alpha = 0.3) + facet_wrap(~Chain)
-df$position <- rep(c(1:2499), 12)
-ggplot(df, aes(x, y, colour = position)) + geom_point(alpha = 0.3) + facet_wrap(~Chain, scales = "free")
+```{r Uncert}
+CalcIV <- function(Dose, times, V, elim, dist, parti){
+  conc <- ((parti * Dose) / V) * exp(-(times * dist)) +
+    (((1 - parti) * Dose) / V) * exp(-(times * elim))
+  df <- data_frame(Route = "IV",
+                   Time = times,
+                   Concentration = conc)
+  return(df)
+}
+CalcIP <- function(Dose, times, V, elim, dist, frac, ip_in, parti){
+  input <- ((Dose * frac) * (1 - exp(-(times * ip_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  df <- data_frame(Route = "IP",
+                   Time = times,
+                   Concentration = conc)
+}
+CalcOR <- function(Dose, times, V, elim, dist, frac, or_in, parti){
+  input <- ((Dose * frac) * (1 - exp(-(times * or_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  df <- data_frame(Route = "OR",
+                   Time = times,
+                   Concentration = conc)
+}
+
+combine <- function(Dose, times, V, elim, dist, frac_ip, frac_or, ip_in, or_in, parti){
+  df <- CalcIV(Dose, times, V, elim, dist, parti) %>%
+    bind_rows(CalcIP(Dose, times, V, elim, dist, frac_ip, ip_in, parti),
+              CalcOR(Dose, times, V, elim, dist, frac_or, or_in, parti))
+  return(df)
+}
+
+samps <- sample.int(3e4, 200)
+
+Vs <- rstan::extract(res, "V_d")$V_d[samps, ]
+elims <- rstan::extract(res, "t_elim")$t_elim[samps, ]
+dists <- rstan::extract(res, "t_dist")$t_dist[samps, ]
+ip_ins <- rstan::extract(res, "t_IP")$t_IP[samps, ]
+or_ins <- rstan::extract(res, "t_OR")$t_OR[samps, ]
+or_frac <- rstan::extract(res, "frac_OR")$frac_OR[samps, ]
+ip_frac <- rstan::extract(res, "frac_IP")$frac_IP[samps, ]
+parts <- rstan::extract(res, "partition")$partition[samps, ]
+
+N_times <- 50
+times <- exp(seq(log(1/60),log(24), length.out = N_times))
+
+dt <- data_frame(Sample = numeric(),
+                 Route = character(),
+                 Time = numeric(),
+                 Concentration = numeric(),
+                 Animal = character())
+for(i in 1:200)
+  for(j in 1:6){
+    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+                    parts[i, j]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j, sep = ""),
+             Group = paste(i, "V", j, sep = ""))
+    dt <- bind_rows(dt, temp)
+  }
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_grid(Route~Animal) +
+  theme_minimal()
+```
+
+```{r PostPred}
+CalcIV <- function(Dose, times, V, elim, dist, parti, noise){
+  conc <- ((parti * Dose) / V) * exp(-(times * dist)) +
+    (((1 - parti) * Dose) / V) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "IV",
+                   Time = times,
+                   Concentration = conc)
+  return(df)
+}
+CalcIP <- function(Dose, times, V, elim, dist, frac, ip_in, parti, noise){
+  input <- ((Dose * frac) * (1 - exp(-(times * ip_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "IP",
+                   Time = times,
+                   Concentration = conc)
+}
+CalcOR <- function(Dose, times, V, elim, dist, frac, or_in, parti, noise){
+  input <- ((Dose * frac) * (1 - exp(-(times * or_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "OR",
+                   Time = times,
+                   Concentration = conc)
+}
+
+combine <- function(Dose, times, V, elim, dist, frac_ip, frac_or, ip_in, or_in, parti, noise){
+  df <- CalcIV(Dose, times, V, elim, dist, parti, noise) %>%
+    bind_rows(CalcIP(Dose, times, V, elim, dist, frac_ip, ip_in, parti, noise),
+              CalcOR(Dose, times, V, elim, dist, frac_or, or_in, parti, noise))
+  return(df)
+}
+
+dispersion <- rstan::extract(res, "dispersion")$dispersion[samps]
+
+N_times <- 50
+times <- exp(seq(log(1/60),log(24), length.out = N_times))
+
+dt <- data_frame(Sample = numeric(),
+                 Route = character(),
+                 Time = numeric(),
+                 Concentration = numeric(),
+                 Animal = character())
+for(i in 1:200)
+  for(j in 1:6){
+    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+                    parts[i, j], dispersion[i]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j, sep = ""),
+             Group = paste(i, "V", j, sep = ""))
+    dt <- bind_rows(dt, temp)
+  }
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_grid(Route~Animal) +
+  theme_minimal()
 ```
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
