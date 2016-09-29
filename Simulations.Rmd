@@ -588,6 +588,420 @@ ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
   facet_grid(Route~Animal) +
   theme_minimal()
 ```
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{stan output.var='HalfLife_Mod_ML_Preds'}
+data{
+int N_times;
+int N_reps;
+vector[N_times] times;
+matrix[N_times, N_reps / 3] conc_iv;
+matrix[N_times, N_reps / 3] conc_ip;
+matrix[N_times, N_reps / 3] conc_or;
+real dose;
+vector[N_reps] weight;
+vector[N_reps] age;
+vector<lower = 0, upper = 1>[N_reps] male;
+}
+transformed data{
+vector[N_times * N_reps / 3] conc_iv_V;
+vector[N_times * N_reps / 3] conc_ip_V;
+vector[N_times * N_reps / 3] conc_or_V;
+vector[N_reps] weight_n;
+vector[N_reps] age_n;
+int N_each;
+
+N_each = N_reps / 3;
+
+conc_iv_V = to_vector(conc_iv);
+conc_ip_V = to_vector(conc_ip);
+conc_or_V = to_vector(conc_or);
+
+weight_n = (weight - mean(weight)) ./ sd(weight);
+age_n = (age - mean(age)) ./ sd(age);
+}
+parameters{
+//Means coefs
+real t_05_int;
+real t_05_age;
+real t_05_male;
+
+real t_or_int;
+real t_or_age;
+real t_or_male;
+
+real t_ip_int;
+real t_ip_age;
+real t_ip_male;
+
+real v_d_int;
+real v_d_weight;
+real v_d_male;
+//SDs
+real<lower = 0> t_05_sigma;
+real<lower = 0> t_OR_sigma;
+real<lower = 0> t_IP_sigma;
+real<lower = 0> V_d_sigma;
+//Raw values
+vector[N_reps] t_elim_raw;
+vector[N_each] t_OR_raw;
+vector[N_each] t_IP_raw;
+vector[N_reps] V_d_raw;
+
+//Fractional values are beta-distributed
+vector<lower = 0, upper = 1>[N_reps] partition;
+vector<lower = 0, upper = 1>[N_each] frac_OR;
+vector<lower = 0, upper = 1>[N_each] frac_IP;
+vector<lower = 0, upper = 1>[N_reps] dist_prop; // distribution:elimination half-life proportion
+real<lower = 0> partition_suc;
+real<lower = 0> frac_OR_suc;
+real<lower = 0> frac_IP_suc;
+real<lower = 0> dist_prop_suc;
+real<lower = 0> partition_fail;
+real<lower = 0> frac_OR_fail;
+real<lower = 0> frac_IP_fail;
+real<lower = 0> dist_prop_fail;
+
+real<lower = 0> dispersion;
+}
+transformed parameters{
+vector<lower = 0>[N_reps] t_elim;
+vector<lower = 0>[N_reps] t_dist;
+vector<lower = 0>[N_each] t_OR;
+vector<lower = 0>[N_each] t_IP;
+vector<lower = 0>[N_reps] V_d;
+//means
+vector[N_reps] log_t_05_mu; // expressed as ln(2)/t_05 so elimination first then distribution
+vector[N_each] log_t_OR_mu;
+vector[N_each] log_t_IP_mu;
+vector[N_reps] log_V_d_mu;
+
+matrix[N_times, N_each] calc_iv;
+matrix[N_times, N_each] calc_ip;
+matrix[N_times, N_each] calc_or;
+
+log_t_05_mu = t_05_int + t_05_age * age_n + t_05_male * male;
+log_t_OR_mu = t_or_int + t_or_age * age_n[7:12] + t_or_male * male[7:12];
+log_t_IP_mu = t_ip_int + t_ip_age * age_n[13:18] + t_ip_male * male[13:18];
+log_V_d_mu = v_d_int + v_d_weight * weight_n + v_d_male * male;
+
+t_elim = exp(log_t_05_mu + t_elim_raw * t_05_sigma);
+t_dist = dist_prop .* t_elim;
+t_OR = exp(log_t_OR_mu + t_OR_raw * t_OR_sigma);
+t_IP = exp(log_t_IP_mu + t_IP_raw * t_IP_sigma);
+V_d = exp(log_V_d_mu + V_d_raw * V_d_sigma);
+
+t_elim = log(2) ./ t_elim;
+t_dist = log(2) ./ t_dist;
+
+for(i in 1:N_reps){
+  vector[N_times] ip_input;
+  vector[N_times] or_input;
+  
+  if(i < 7)
+  calc_iv[, i] = log((partition[i] * (dose / V_d[i])) * exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * (dose / V_d[i])) * exp(-(times * t_elim[i])));
+  
+  if(i > 6 && i < 13){
+  ip_input = ((dose * frac_IP[i - 6]) * (1 - exp(-(times * t_IP[i - 6])))) / V_d[i];
+  calc_ip[, i - 6] = log((partition[i] * ip_input) .* exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * ip_input) .* exp(-(times * t_elim[i])));
+  }
+  
+  if(i > 12){
+  or_input = ((dose * frac_OR[i - 12]) * (1 - exp(-(times * t_OR[i - 12])))) / V_d[i];
+  calc_or[, i - 12] = log((partition[i] * or_input) .* exp(-(times * t_dist[i])) +
+    ((1 - partition[i]) * or_input) .* exp(-(times * t_elim[i])));
+  }
+}
+
+}
+model{
+vector[N_times * N_each] calc_iv_V;
+vector[N_times * N_each] calc_ip_V;
+vector[N_times * N_each] calc_or_V;
+
+t_05_int ~ normal(0, 10);
+t_05_age ~ normal(0, 10);
+t_05_male ~ normal(0, 10);
+
+t_or_int ~ normal(0, 10);
+t_or_age ~ normal(0, 10);
+t_or_male ~ normal(0, 10);
+
+t_ip_int ~ normal(0, 10);
+t_ip_age ~ normal(0, 10);
+t_ip_male ~ normal(0, 10);
+
+v_d_int ~ normal(0, 10);
+v_d_weight ~ normal(0, 10);
+v_d_male ~ normal(0, 10);
+
+//SDs
+t_05_sigma ~ normal(0, 1);
+t_OR_sigma ~ normal(0, 5);
+t_IP_sigma ~ normal(0, 5);
+V_d_sigma ~ normal(0, 5);
+//Raw values
+t_elim_raw ~ normal(0, 1);
+t_OR_raw ~ normal(0, 1);
+t_IP_raw ~ normal(0, 1);
+V_d_raw ~ normal(0, 1);
+
+//Fractional values are beta-distributed
+partition ~ beta(partition_suc, partition_fail);
+frac_OR ~ beta(frac_OR_suc, frac_OR_fail);
+frac_IP ~ beta(frac_IP_suc, frac_IP_fail);
+dist_prop ~ beta(dist_prop_suc, dist_prop_fail);
+partition_suc ~ student_t(3, 0, 3);
+frac_OR_suc ~ student_t(3, 0, 3);
+frac_IP_suc ~ student_t(3, 0, 3);
+dist_prop_suc ~ student_t(3, 0, 3);
+partition_fail ~ student_t(3, 0, 3);
+frac_OR_fail ~ student_t(3, 0, 3);
+frac_IP_fail ~ student_t(3, 0, 3);
+dist_prop_fail ~ student_t(3, 0, 3);
+
+
+dispersion ~ normal(0, 1);
+
+calc_iv_V = to_vector(calc_iv);
+calc_ip_V = to_vector(calc_ip);
+calc_or_V = to_vector(calc_or);
+
+conc_iv_V ~ normal(calc_iv_V, dispersion);
+conc_ip_V ~ normal(calc_ip_V, dispersion);
+conc_or_V ~ normal(calc_or_V, dispersion);
+}
+generated quantities{
+vector[N_reps] t_dist_lin;
+vector[N_reps] t_elim_lin;
+
+for(i in 1:N_reps){
+  t_dist_lin[i] = log(2) / t_dist[i];
+  t_elim_lin[i] = log(2) / t_elim[i];
+}
+}
+```
+
+```{r DataSim_Hierarch_pred}
+Dosage <- 200 # mg/kg
+Male <- rep(c(0, 0, 0, 1, 1, 1), 3)
+Age <- c(rep(8, 6), rep(12, 6), rep(16, 6))
+Weights <- rnorm(18, 21 + 7/8 * (Age - 8) + 4 * Male, 1) / 1000 # in kg
+V_mass <- 58.5 # ml of blood / kg
+V_ds <- rnorm(18, V_mass * Weights, 0.1)
+Dose <- 5
+
+t_elims <- log(2) / rnorm(18, 2.2 + 0.05 * (Age - 12) + 0.2 * Male, 0.3)
+t_dists <- log(2) / abs(rnorm(18, 0.6 + 0.02 * (Age - 12) + 0.1 * Male, 0.15))
+partitions <- rep(rnorm(6, 0.6, 0.1), 3)
+
+t_absorp_ORs <- log(2) / abs(rnorm(18, 0.4 + 0.01 * (Age - 12) + 0.15 * Male, 0.1))
+t_absorp_IPs <- log(2) / abs(rnorm(18, 0.3 + 0.02 * (Age - 12) + 0.1 * Male, 0.1))
+
+F_ORs <- rep(replicate(6, min(c(0.99, rnorm(1, 0.8, 0.1)))), 3)
+F_IPs <- rep(replicate(6, min(c(0.99, rnorm(1, 0.9, 0.1)))), 3)
+
+IV_dists <- matrix(rep(0, 48), ncol = 6)
+IV_elims <- matrix(rep(0, 48), ncol = 6)
+IV_dats <- matrix(rep(0, 48), ncol = 6)
+
+IP_inpus <- matrix(rep(0, 48), ncol = 6)
+IP_dists <- matrix(rep(0, 48), ncol = 6)
+IP_elims <- matrix(rep(0, 48), ncol = 6)
+IP_dats <- matrix(rep(0, 48), ncol = 6)
+
+OR_inpus <- matrix(rep(0, 48), ncol = 6)
+OR_dists <- matrix(rep(0, 48), ncol = 6)
+OR_elims <- matrix(rep(0, 48), ncol = 6)
+OR_dats <- matrix(rep(0, 48), ncol = 6)
+
+for(i in 1:6){
+  IV_dists[, i] <- (partitions[i] * (Dose / V_ds[i])) * exp(-(times * t_dists[i]))
+  IV_elims[, i] <-   ((1 - partitions[i]) * (Dose / V_ds[i])) * exp(-(times * t_elims[i]))
+  IV_dats[, i] <- exp(rnorm(8, log(IV_dists[, i] + IV_elims[, i]), 0.1))
+}
+for(i in 7:12){
+  OR_inpus[, i - 6] <- (Dose * F_ORs[i]) / V_ds[i] * (1 - exp(-(times * t_absorp_ORs[i])))
+  OR_dists[, i - 6] <- (partitions[i] * OR_inpus[, i - 6]) * exp(-(times * t_dists[i]))
+  OR_elims[, i - 6] <-   ((1 - partitions[i]) * OR_inpus[, i - 6]) * exp(-(times * t_elims[i]))
+  OR_dats[, i - 6] <- exp(rnorm(8, log(OR_dists[, i - 6] + OR_elims[, i - 6]), 0.1))
+}
+for(i in 13:18){
+  IP_inpus[, i - 12] <- (Dose * F_IPs[i]) / V_ds[i] * (1 - exp(-(times * t_absorp_IPs[i])))
+  IP_dists[, i - 12] <- (partitions[i] * IP_inpus[, i - 12]) * exp(-(times * t_dists[i]))
+  IP_elims[, i - 12] <-   ((1 - partitions[i]) * IP_inpus[, i - 12]) * exp(-(times * t_elims[i]))
+  IP_dats[, i - 12] <- exp(rnorm(8, log(IP_dists[, i - 12] + IP_elims[, i - 12]), 0.1))
+}
+
+indiv_plot <- as_data_frame(IV_dats) %>%
+  bind_rows(as_data_frame(IP_dats), as_data_frame(OR_dats)) %>%
+  mutate(Time = rep(times, 3),
+         Route = rep(c("IV", "IP", "OR"), each = 8)) %>%
+  gather("Animal", "Concentration", 1:6)
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~Animal) +
+  theme_minimal()
+```
+
+```{r RunMLModel_preds}
+res <- sampling(HalfLife_Mod_ML_Preds, data = list(N_times = 8,
+                                             N_reps = 18,
+                                          times = times,
+                                          conc_iv = log(IV_dats),
+                                          conc_ip = log(IP_dats),
+                                          conc_or = log(OR_dats),
+                                          dose = 5,
+                                          male = Male,
+                                          age = Age,
+                                          weight = Weights),
+                control = list(adapt_delta = 0.9999), chains = 16, iter = 5000,
+                warmup = 2500, refresh = 250)
+saveRDS(res, "HalfLife_Mod_ML_Preds.RDS")
+print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "partition_fail",
+                    "log_V_d_mu", "V_d_sigma", "dispersion", "log_t_OR_mu", "t_OR_sigma",
+                    "log_t_IP_mu", "t_IP_sigma",
+                    "frac_OR_suc", "frac_OR_fail",
+                    "dist_prop_suc", "dist_prop_fail",
+                    "frac_IP_suc", "frac_IP_fail",
+                    "t_dist", "t_elim"))
+print(res, pars = c("t_05_int", "t_05_age", "t_05_male"))
+```
+
+
+```{r Uncert_Preds}
+CalcIV <- function(Dose, times, V, elim, dist, parti){
+  conc <- ((parti * Dose) / V) * exp(-(times * dist)) +
+    (((1 - parti) * Dose) / V) * exp(-(times * elim))
+  df <- data_frame(Route = "IV",
+                   Time = times,
+                   Concentration = conc)
+  return(df)
+}
+CalcIP <- function(Dose, times, V, elim, dist, frac, ip_in, parti){
+  input <- ((Dose * frac) * (1 - exp(-(times * ip_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  df <- data_frame(Route = "IP",
+                   Time = times,
+                   Concentration = conc)
+}
+CalcOR <- function(Dose, times, V, elim, dist, frac, or_in, parti){
+  input <- ((Dose * frac) * (1 - exp(-(times * or_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  df <- data_frame(Route = "OR",
+                   Time = times,
+                   Concentration = conc)
+}
+
+combine <- function(Dose, times, V, elim, dist, frac_ip, frac_or, ip_in, or_in, parti){
+  df <- CalcIV(Dose, times, V, elim, dist, parti) %>%
+    bind_rows(CalcIP(Dose, times, V, elim, dist, frac_ip, ip_in, parti),
+              CalcOR(Dose, times, V, elim, dist, frac_or, or_in, parti))
+  return(df)
+}
+
+samps <- sample.int(3e4, 200)
+
+Vs <- rstan::extract(res, "V_d")$V_d[samps, ]
+elims <- rstan::extract(res, "t_elim")$t_elim[samps, ]
+dists <- rstan::extract(res, "t_dist")$t_dist[samps, ]
+ip_ins <- rstan::extract(res, "t_IP")$t_IP[samps, ]
+or_ins <- rstan::extract(res, "t_OR")$t_OR[samps, ]
+or_frac <- rstan::extract(res, "frac_OR")$frac_OR[samps, ]
+ip_frac <- rstan::extract(res, "frac_IP")$frac_IP[samps, ]
+parts <- rstan::extract(res, "partition")$partition[samps, ]
+
+N_times <- 50
+times <- exp(seq(log(1/60),log(24), length.out = N_times))
+
+dt <- data_frame(Sample = numeric(),
+                 Route = character(),
+                 Time = numeric(),
+                 Concentration = numeric(),
+                 Animal = character())
+for(i in 1:200)
+  for(j in 1:6){
+    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+                    parts[i, j]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j, sep = ""),
+             Group = paste(i, "V", j, sep = ""))
+    dt <- bind_rows(dt, temp)
+  }
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_grid(Route~Animal) +
+  theme_minimal()
+```
+
+```{r PostPred_Preds}
+CalcIV <- function(Dose, times, V, elim, dist, parti, noise){
+  conc <- ((parti * Dose) / V) * exp(-(times * dist)) +
+    (((1 - parti) * Dose) / V) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "IV",
+                   Time = times,
+                   Concentration = conc)
+  return(df)
+}
+CalcIP <- function(Dose, times, V, elim, dist, frac, ip_in, parti, noise){
+  input <- ((Dose * frac) * (1 - exp(-(times * ip_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "IP",
+                   Time = times,
+                   Concentration = conc)
+}
+CalcOR <- function(Dose, times, V, elim, dist, frac, or_in, parti, noise){
+  input <- ((Dose * frac) * (1 - exp(-(times * or_in)))) / V
+  conc <- ((parti * input)) * exp(-(times * dist)) +
+    (((1 - parti) * input)) * exp(-(times * elim))
+  conc <- exp(rnorm(length(times), log(conc), noise))
+  df <- data_frame(Route = "OR",
+                   Time = times,
+                   Concentration = conc)
+}
+
+combine <- function(Dose, times, V, elim, dist, frac_ip, frac_or, ip_in, or_in, parti, noise){
+  df <- CalcIV(Dose, times, V, elim, dist, parti, noise) %>%
+    bind_rows(CalcIP(Dose, times, V, elim, dist, frac_ip, ip_in, parti, noise),
+              CalcOR(Dose, times, V, elim, dist, frac_or, or_in, parti, noise))
+  return(df)
+}
+
+dispersion <- rstan::extract(res, "dispersion")$dispersion[samps]
+
+N_times <- 50
+times <- exp(seq(log(1/60),log(24), length.out = N_times))
+
+dt <- data_frame(Sample = numeric(),
+                 Route = character(),
+                 Time = numeric(),
+                 Concentration = numeric(),
+                 Animal = character())
+for(i in 1:200)
+  for(j in 1:6){
+    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+                    parts[i, j], dispersion[i]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j, sep = ""),
+             Group = paste(i, "V", j, sep = ""))
+    dt <- bind_rows(dt, temp)
+  }
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_grid(Route~Animal) +
+  theme_minimal()
+```
