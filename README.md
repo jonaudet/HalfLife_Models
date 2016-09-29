@@ -23,3 +23,6 @@ The parameters constrained between 0 and 1: Absorbed fraction (IP and oral), par
 An issue with the model where some chains would reverse the elimination and distribution half-lives at the individual level (the means were ordered but the individual estimates were not) required a change in the model. In order to ensure that the distribution half-life is shorter than the elimination half-life, the distribution half-life is obtained by multiplying the elimination half-life by a number between 0 and 1, effectively `t_dist = prop * t_elim`. This proportion is modeled as beta-distributed and is applied to the actual elimination half-life. Both parameters are then transformed `log(2)/t` to keep the concentration calculations multiplicative.
 
 There are some transformations from matrices to vectors that can probably be done away with somehow.
+
+## HalfLife_Mod_ML_Preds
+This model uses weight, age, and sex (male or not) to determine the means of the half-lives (age + sex; dist, elim, or, ip) and the volume of distribution (weight + sex; v_d). At the moment even if the same subjects are used for all routes, the model assumes they are different due to age/weight changes over time. There may be too many parameters to estimate with 6 subjects (which is what we use).
