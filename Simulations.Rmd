@@ -925,13 +925,32 @@ dt <- data_frame(Sample = numeric(),
                  Concentration = numeric(),
                  Animal = character())
 for(i in 1:200)
-  for(j in 1:6){
-    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
-                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+  for(j in 1:18){
+    if(j < 7){
+    temp <- CalcIV(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
                     parts[i, j]) %>%
       mutate(Sample = i,
              Animal = paste("V", j, sep = ""),
              Group = paste(i, "V", j, sep = ""))
+    } else {
+      if(j > 6 & j < 13){
+    temp <- CalcOR(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    or_frac[i, j - 6], or_ins[i, j - 6],
+                    parts[i, j]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j - 6, sep = ""),
+             Group = paste(i, "V", j - 6, sep = ""))
+    } else {
+      if(j > 12){
+    temp <- CalcIP(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j - 12], ip_ins[i, j - 12],
+                    parts[i, j]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j - 12, sep = ""),
+             Group = paste(i, "V", j - 12, sep = ""))
+    }
+    }
+    }
     dt <- bind_rows(dt, temp)
   }
 
@@ -939,6 +958,12 @@ ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
   geom_point() +
   geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
   facet_grid(Route~Animal) +
+  theme_minimal()
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Animal)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_wrap(~Route) +
   theme_minimal()
 ```
 
@@ -989,13 +1014,32 @@ dt <- data_frame(Sample = numeric(),
                  Concentration = numeric(),
                  Animal = character())
 for(i in 1:200)
-  for(j in 1:6){
-    temp <- combine(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
-                    ip_frac[i, j], or_frac[i, j], ip_ins[i, j], or_ins[i, j],
+  for(j in 1:18){
+    if(j < 7){
+    temp <- CalcIV(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
                     parts[i, j], dispersion[i]) %>%
       mutate(Sample = i,
              Animal = paste("V", j, sep = ""),
              Group = paste(i, "V", j, sep = ""))
+    } else {
+      if(j > 6 & j < 13){
+    temp <- CalcOR(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    or_frac[i, j - 6], or_ins[i, j - 6],
+                    parts[i, j], dispersion[i]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j - 6, sep = ""),
+             Group = paste(i, "V", j - 6, sep = ""))
+    } else {
+      if(j > 12){
+    temp <- CalcIP(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
+                    ip_frac[i, j - 12], ip_ins[i, j - 12],
+                    parts[i, j], dispersion[i]) %>%
+      mutate(Sample = i,
+             Animal = paste("V", j - 12, sep = ""),
+             Group = paste(i, "V", j - 12, sep = ""))
+    }
+    }
+    }
     dt <- bind_rows(dt, temp)
   }
 
@@ -1003,5 +1047,11 @@ ggplot(indiv_plot, aes(Time, Concentration, colour = Route)) +
   geom_point() +
   geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
   facet_grid(Route~Animal) +
+  theme_minimal()
+
+ggplot(indiv_plot, aes(Time, Concentration, colour = Animal)) +
+  geom_point() +
+  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
+  facet_wrap(~Route) +
   theme_minimal()
 ```
