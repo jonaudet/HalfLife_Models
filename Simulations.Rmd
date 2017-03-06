@@ -1123,81 +1123,80 @@ conc_ip_log = log(conc_ip);
 }
 parameters{
 //means
-real log_t_05_mu; // expressed as ln(2)/t_05 so elimination first then distribution
+real<lower = 0> t_05_mu; // expressed as ln(2)/t_05 so elimination first then distribution
+real<lower = 0> t_dist_mu;
 real log_t_IP_mu;
 real log_V_d_mu;
 //SDs
 real<lower = 0> t_05_sigma;
+real<lower = 0> t_dist_sigma;
 real<lower = 0> t_IP_sigma;
 real<lower = 0> V_d_sigma;
 //Raw values
 vector[N_anim] t_elim_raw;
+vector[N_anim] t_dist_raw;
 vector[N_anim] t_IP_raw;
 vector[N_anim] V_d_raw;
 
 //Fractional values are beta-distributed
 vector<lower = 0, upper = 1>[N_anim] partition;
 vector<lower = 0, upper = 1>[N_anim] frac_IP;
-vector<lower = 0, upper = 1>[N_anim] dist_prop; // distribution:elimination half-life proportion
 real<lower = 0> partition_suc;
 real<lower = 0> frac_IP_suc;
-real<lower = 0> dist_prop_suc;
 real<lower = 0> partition_fail;
 real<lower = 0> frac_IP_fail;
-real<lower = 0> dist_prop_fail;
 
 real<lower = 0> dispersion;
 }
 transformed parameters{
-vector<lower = 0>[N_anim] t_elim;
-vector<lower = 0>[N_anim] t_dist;
+ordered<lower = 0>[2] t_elim_dist[N_anim];
 vector<lower = 0>[N_anim] t_IP;
 vector<lower = 0>[N_anim] V_d;
 
 vector[N] calc_ip;
 
-t_elim = exp(log_t_05_mu + t_elim_raw * t_05_sigma);
-t_dist = dist_prop .* t_elim;
+for(i in 1:N_anim){
+  t_elim_dist[i, 1] = log(2) ./ (t_05_mu + t_elim_raw[i] * t_05_sigma);
+  t_elim_dist[i, 2] = log(2) ./ (t_dist_mu + t_dist_raw[i] * t_dist_sigma);
+}
 t_IP = exp(log_t_IP_mu + t_IP_raw * t_IP_sigma);
 V_d = exp(log_V_d_mu + V_d_raw * V_d_sigma);
 
-t_elim = log(2) ./ t_elim;
-t_dist = log(2) ./ t_dist;
 
 for(i in 1:N){
   real ip_input;
 
   ip_input = ((dose * frac_IP[animal[i]]) * (1 - exp(-(times[i] * t_IP[animal[i]])))) / V_d[animal[i]];
-  calc_ip[i] = log((partition[animal[i]] * ip_input) * exp(-(times[i] * t_dist[animal[i]])) +
-    ((1 - partition[animal[i]]) * ip_input) * exp(-(times[i] * t_elim[animal[i]])));
+  calc_ip[i] = log((partition[animal[i]] * ip_input) * exp(-(times[i] * t_elim_dist[animal[i], 2])) +
+    ((1 - partition[animal[i]]) * ip_input) * exp(-(times[i] * t_elim_dist[animal[i], 1])));
 }
 
 }
 model{
 
-log_t_05_mu ~ normal(0, 5);
+t_05_mu ~ gamma(1.5, 6);
+t_dist_mu ~ gamma(1.5, 6);
 log_t_IP_mu ~ normal(0, 2);
 log_V_d_mu ~ normal(0, 2);
 
 //SDs
 t_05_sigma ~ normal(0, 1);
+t_dist_sigma ~ normal(0, 1);
 t_IP_sigma ~ normal(0, 5);
 V_d_sigma ~ normal(0, 5);
 //Raw values
 t_elim_raw ~ normal(0, 1);
+t_dist_raw ~ normal(0, 1);
 t_IP_raw ~ normal(0, 1);
 V_d_raw ~ normal(0, 1);
 
 //Fractional values are beta-distributed
 partition ~ beta(partition_suc, partition_fail);
 frac_IP ~ beta(frac_IP_suc, frac_IP_fail);
-dist_prop ~ beta(dist_prop_suc, dist_prop_fail);
 partition_suc ~ gamma(1.5, 6);
 frac_IP_suc ~ gamma(1.5, 6);
-dist_prop_suc ~ gamma(1.5, 6);
 partition_fail ~ gamma(1.5, 6);
 frac_IP_fail ~ gamma(1.5, 6);
-dist_prop_fail ~ gamma(1.5, 6);
 
 
 dispersion ~ normal(0, 1);
@@ -1209,8 +1208,8 @@ vector[N_anim] t_dist_lin;
 vector[N_anim] t_elim_lin;
 
 for(i in 1:N_anim){
-  t_dist_lin[i] = log(2) / t_dist[i];
-  t_elim_lin[i] = log(2) / t_elim[i];
+  t_dist_lin[i] = log(2) / t_elim_dist[i, 2];
+  t_elim_lin[i] = log(2) / t_elim_dist[i, 1];
 }
 }
 ```
@@ -1224,7 +1223,7 @@ res <- sampling(HalfLife_Mod_ML_IP, data = list(N = nrow(final_dat),
                                                 dose = 1500,
                                                 animal = final_dat$Animal_ID),
                 control = list(adapt_delta = 0.9999), chains = 4, iter = 2000,
-                warmup = 500, refresh = 50)
+                warmup = 500, refresh = 50, diagnostic_file = "dia", verbose = T)
 saveRDS(res, "HalfLife_Mod_ML_IP.RDS")
 print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "partition_fail",
                     "log_V_d_mu", "V_d_sigma", "dispersion",
