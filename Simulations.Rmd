@@ -1069,7 +1069,7 @@ V_ds <- V_mass * Weights
 Dose <- 1500
 
 t_elims <- log(2) / rnorm(9, 6, 0.3)
-t_dists <- log(2) / abs(rnorm(9, 2, 1))
+t_dists <- log(2) / rgamma(9, shape = 4, rate = 12)
 partitions <- rnorm(9, 0.6, 0.1)
 
 t_absorp_IPs <- log(2) / abs(rnorm(9, 0.5, 0.1))
@@ -1101,10 +1101,15 @@ ggplot(indiv_plot, aes(Time, Concentration)) +
   facet_wrap(~Animal) +
   theme_minimal()
 
+ggplot(indiv_plot, aes(Time, Concentration)) +
+  geom_point(aes(colour = Animal)) +
+    stat_summary(fun.data = "mean_cl_boot") +
+    theme_minimal()
+
 final_dat <- filter(indiv_plot,
-                    (Animal_ID <= 3 & Time %in% c(5/60, 3, 8)) | 
+                    (Animal_ID <= 3 & Time %in% c(5/60, 3, 8, 24)) | 
                       (Animal_ID > 3 & Animal_ID <= 6 & Time %in% c(0.5, 4, 24)) |
-                      (Animal_ID > 6 & Time %in% c(1, 6)))
+                      (Animal_ID > 6 & Time %in% c(1, 6, 24)))
 ```
 
 ```{stan output.var='HalfLife_Mod_ML_IP'}
@@ -1124,27 +1129,30 @@ conc_ip_log = log(conc_ip);
 parameters{
 //means
 real log_t_05_mu; // expressed as ln(2)/t_05 so elimination first then distribution
+real log_t_dist_mu;
 real log_t_IP_mu;
 real log_V_d_mu;
 //SDs
 real<lower = 0> t_05_sigma;
+real<lower = 0> t_dist_sigma;
 real<lower = 0> t_IP_sigma;
 real<lower = 0> V_d_sigma;
 //Raw values
 vector[N_anim] t_elim_raw;
+vector[N_anim] t_dist_raw;
 vector[N_anim] t_IP_raw;
 vector[N_anim] V_d_raw;
 
 //Fractional values are beta-distributed
 vector<lower = 0, upper = 1>[N_anim] partition;
 vector<lower = 0, upper = 1>[N_anim] frac_IP;
-vector<lower = 0, upper = 1>[N_anim] dist_prop; // distribution:elimination half-life proportion
+//vector<lower = 0, upper = 1>[N_anim] dist_prop; // distribution:elimination half-life proportion
 real<lower = 0> partition_suc;
 real<lower = 0> frac_IP_suc;
-real<lower = 0> dist_prop_suc;
+//real<lower = 0> dist_prop_suc;
 real<lower = 0> partition_fail;
 real<lower = 0> frac_IP_fail;
-real<lower = 0> dist_prop_fail;
+//real<lower = 0> dist_prop_fail;
 
 real<lower = 0> dispersion;
 }
@@ -1157,12 +1165,10 @@ vector<lower = 0>[N_anim] V_d;
 vector[N] calc_ip;
 
 t_elim = exp(log_t_05_mu + t_elim_raw * t_05_sigma);
-t_dist = dist_prop .* t_elim;
+t_dist = t_elim + exp(log_t_dist_mu + t_dist_raw * t_dist_sigma);
 t_IP = exp(log_t_IP_mu + t_IP_raw * t_IP_sigma);
 V_d = exp(log_V_d_mu + V_d_raw * V_d_sigma);
 
-t_elim = log(2) ./ t_elim;
-t_dist = log(2) ./ t_dist;
 
 for(i in 1:N){
   real ip_input;
@@ -1175,34 +1181,39 @@ for(i in 1:N){
 }
 model{
 
-log_t_05_mu ~ normal(0, 5);
+log_t_05_mu ~ normal(-log(6), 1);
+log_t_dist_mu ~ normal(1, 2);
 log_t_IP_mu ~ normal(0, 2);
 log_V_d_mu ~ normal(0, 2);
 
 //SDs
 t_05_sigma ~ normal(0, 1);
-t_IP_sigma ~ normal(0, 5);
+t_dist_sigma ~ normal(0, 1);
+t_IP_sigma ~ normal(0, 2);
 V_d_sigma ~ normal(0, 5);
 //Raw values
 t_elim_raw ~ normal(0, 1);
+t_dist_raw ~ normal(0, 1);
 t_IP_raw ~ normal(0, 1);
 V_d_raw ~ normal(0, 1);
 
 //Fractional values are beta-distributed
 partition ~ beta(partition_suc, partition_fail);
 frac_IP ~ beta(frac_IP_suc, frac_IP_fail);
-dist_prop ~ beta(dist_prop_suc, dist_prop_fail);
-partition_suc ~ gamma(1.5, 6);
-frac_IP_suc ~ gamma(1.5, 6);
-dist_prop_suc ~ gamma(1.5, 6);
-partition_fail ~ gamma(1.5, 6);
-frac_IP_fail ~ gamma(1.5, 6);
-dist_prop_fail ~ gamma(1.5, 6);
+//dist_prop ~ beta(dist_prop_suc, dist_prop_fail);
+partition_suc ~ student_t(7, 0, 3);
+frac_IP_suc ~ student_t(7, 0, 3);
+//dist_prop_suc ~ student_t(7, 0, 3);
+partition_fail ~ student_t(7, 0, 3);
+frac_IP_fail ~ student_t(7, 0, 3);
+//dist_prop_fail ~ student_t(7, 0, 3);
 
 
 dispersion ~ normal(0, 1);
 
 conc_ip_log ~ normal(calc_ip, dispersion);
+
+#target += sum(log_t_dist_mu + t_dist_raw * t_dist_sigma);
 }
 generated quantities{
 vector[N_anim] t_dist_lin;
@@ -1226,10 +1237,11 @@ res <- sampling(HalfLife_Mod_ML_IP, data = list(N = nrow(final_dat),
                 control = list(adapt_delta = 0.9999), chains = 4, iter = 2000,
                 warmup = 500, refresh = 50)
 saveRDS(res, "HalfLife_Mod_ML_IP.RDS")
-print(res, pars = c("log_t_05_mu", "t_05_sigma", "dist_prop", "partition_suc", "partition_fail",
+print(res, pars = c("log_t_05_mu", "t_05_sigma",# "dist_prop",
+                    "partition_suc", "partition_fail",
                     "log_V_d_mu", "V_d_sigma", "dispersion",
                     "log_t_IP_mu", "t_IP_sigma",
-                    "dist_prop_suc", "dist_prop_fail",
+                    #"dist_prop_suc", "dist_prop_fail",
                     "frac_IP_suc", "frac_IP_fail",
                     "t_dist", "t_elim"))
 ```
@@ -1244,7 +1256,7 @@ CalcIP <- function(Dose, times, V, elim, dist, frac, ip_in, parti){
                    Concentration = conc)
 }
 
-samps <- sample.int(6e3, 200)
+samps <- sample.int(6e3, 1000)
 
 Vs <- rstan::extract(res, "V_d")$V_d[samps, ]
 elims <- rstan::extract(res, "t_elim")$t_elim[samps, ]
@@ -1261,7 +1273,7 @@ dt <- data_frame(Sample = numeric(),
                  Time = numeric(),
                  Concentration = numeric(),
                  Animal = character())
-for(i in 1:200)
+for(i in 1:1000)
   for(j in 1:9){
     temp <- CalcIP(Dose, times, Vs[i, j], elims[i, j], dists[i, j],
                     ip_frac[i, j], ip_ins[i, j], parts[i, j]) %>%
@@ -1272,8 +1284,8 @@ for(i in 1:200)
   }
 
 ggplot(indiv_plot, aes(Time, Concentration)) +
-  geom_line(data = dt, alpha = 0.05, aes(group = Group)) +
-  geom_point() +
+  geom_line(data = dt, alpha = 0.01, aes(group = Group)) +
+  geom_point(colour = "blue") +
   geom_point(data = final_dat, colour = "red") +
   facet_wrap(~Animal) +
   theme_minimal()
